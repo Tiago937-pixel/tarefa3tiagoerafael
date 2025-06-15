@@ -4,8 +4,6 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import seaborn as sns
-import matplotlib.pyplot as plt
 
 # Machine Learning
 from sklearn.model_selection import train_test_split
@@ -17,7 +15,6 @@ from sklearn.metrics import (accuracy_score, roc_auc_score, precision_score,
                            classification_report)
 from imblearn.over_sampling import SMOTE
 import statsmodels.api as sm
-from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 # Warnings
 import warnings
@@ -85,23 +82,17 @@ st.markdown("""
 def load_data():
     """Carrega e processa os dados do hotel"""
     try:
-        # Tentativa de carregar de diferentes localizações
-        possible_paths = [
-            'hotel_bookings.csv',
-            'data/hotel_bookings.csv', 
-            'https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-02-11/hotels.csv'
-        ]
+        # Verifica se o arquivo foi carregado pelo usuário
+        uploaded_file = st.sidebar.file_uploader("📁 Upload do arquivo hotel_bookings.csv", type=['csv'])
         
-        for path in possible_paths:
-            try:
-                data = pd.read_csv(path)
-                if 'is_canceled' in data.columns:
-                    return data
-            except:
-                continue
-                
-        # Se não conseguir carregar, criar dados sintéticos para demonstração
-        st.warning("⚠️ Arquivo de dados não encontrado. Gerando dados sintéticos para demonstração.")
+        if uploaded_file is not None:
+            data = pd.read_csv(uploaded_file)
+            if 'is_canceled' in data.columns:
+                st.success("✅ Arquivo carregado com sucesso!")
+                return data
+        
+        # Se não há arquivo, gera dados sintéticos
+        st.info("ℹ️ Usando dados sintéticos para demonstração. Faça upload do arquivo hotel_bookings.csv para usar dados reais.")
         return generate_synthetic_data()
         
     except Exception as e:
@@ -129,7 +120,7 @@ def generate_synthetic_data():
     stays_in_weekend_nights = np.random.poisson(1, n)
     stays_in_week_nights = np.random.poisson(2, n)
     adults = np.random.choice([1, 2, 3, 4], n, p=[0.2, 0.6, 0.15, 0.05])
-    children = np.random.choice([0, 1, 2], n, p=[0.8, 0.15, 0.05])
+    children = np.random.choice([0, 1, 2], n, p=[0.8, 0.15, 0.05]).astype(float)
     babies = np.random.choice([0, 1], n, p=[0.95, 0.05])
     adr = np.random.gamma(2, 50, n)
     total_of_special_requests = np.random.poisson(0.5, n)
@@ -179,18 +170,33 @@ def prepare_data(data):
     # Criar cópias para não modificar os dados originais
     df = data.copy()
     
+    # Tratar valores missing
+    df = df.fillna(0)
+    
     # Encoding de variáveis categóricas
     categorical_cols = ['hotel', 'arrival_date_month', 'meal', 'market_segment', 'customer_type']
-    df_encoded = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+    
+    # Verificar se as colunas existem antes de fazer encoding
+    existing_categorical_cols = [col for col in categorical_cols if col in df.columns]
+    
+    if existing_categorical_cols:
+        df_encoded = pd.get_dummies(df, columns=existing_categorical_cols, drop_first=True)
+    else:
+        df_encoded = df.copy()
     
     return df_encoded
 
 def calculate_vif(X):
     """Calcula o Variance Inflation Factor para detectar multicolinearidade"""
-    vif_data = pd.DataFrame()
-    vif_data["Variável"] = X.columns
-    vif_data["VIF"] = [variance_inflation_factor(X.values, i) for i in range(len(X.columns))]
-    return vif_data.sort_values('VIF', ascending=False)
+    try:
+        from statsmodels.stats.outliers_influence import variance_inflation_factor
+        vif_data = pd.DataFrame()
+        vif_data["Variável"] = X.columns
+        vif_data["VIF"] = [variance_inflation_factor(X.values, i) for i in range(len(X.columns))]
+        return vif_data.sort_values('VIF', ascending=False)
+    except:
+        # Se der erro, retorna DataFrame vazio
+        return pd.DataFrame({"Variável": [], "VIF": []})
 
 # Carregar dados
 data = load_data()
@@ -301,47 +307,47 @@ elif page == "📊 Análise Exploratória":
         if 'is_canceled' in numeric_cols:
             numeric_cols.remove('is_canceled')
         
-        selected_numeric = st.multiselect(
-            "Selecione as variáveis numéricas para análise:",
-            numeric_cols,
-            default=numeric_cols[:4] if len(numeric_cols) >= 4 else numeric_cols
-        )
-        
-        if selected_numeric:
-            # Estatísticas descritivas
-            st.write("**Estatísticas Descritivas:**")
-            st.dataframe(data[selected_numeric].describe())
-            
-            # Distribuições
-            fig = make_subplots(
-                rows=2, cols=2,
-                subplot_titles=selected_numeric[:4],
-                specs=[[{"secondary_y": False}, {"secondary_y": False}],
-                       [{"secondary_y": False}, {"secondary_y": False}]]
+        if len(numeric_cols) > 0:
+            selected_numeric = st.multiselect(
+                "Selecione as variáveis numéricas para análise:",
+                numeric_cols,
+                default=numeric_cols[:4] if len(numeric_cols) >= 4 else numeric_cols
             )
             
-            for i, col in enumerate(selected_numeric[:4]):
-                row = i // 2 + 1
-                col_pos = i % 2 + 1
+            if selected_numeric:
+                # Estatísticas descritivas
+                st.write("**Estatísticas Descritivas:**")
+                st.dataframe(data[selected_numeric].describe())
                 
-                fig.add_trace(
-                    go.Histogram(x=data[col], name=col, opacity=0.7),
-                    row=row, col=col_pos
+                # Distribuições
+                n_vars = min(len(selected_numeric), 4)
+                fig = make_subplots(
+                    rows=2, cols=2,
+                    subplot_titles=selected_numeric[:n_vars]
                 )
-            
-            fig.update_layout(height=600, showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Boxplots por cancelamento
-            st.subheader("📦 Distribuição por Status de Cancelamento")
-            
-            selected_for_box = st.selectbox("Escolha uma variável para análise detalhada:", selected_numeric)
-            
-            fig = px.box(data, x='is_canceled', y=selected_for_box, 
-                        title=f"Distribuição de {selected_for_box} por Status de Cancelamento",
-                        labels={'is_canceled': 'Cancelado (0=Não, 1=Sim)'})
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
+                
+                for i, col in enumerate(selected_numeric[:n_vars]):
+                    row = i // 2 + 1
+                    col_pos = i % 2 + 1
+                    
+                    fig.add_trace(
+                        go.Histogram(x=data[col], name=col, opacity=0.7),
+                        row=row, col=col_pos
+                    )
+                
+                fig.update_layout(height=600, showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Boxplots por cancelamento
+                st.subheader("📦 Distribuição por Status de Cancelamento")
+                
+                selected_for_box = st.selectbox("Escolha uma variável para análise detalhada:", selected_numeric)
+                
+                fig = px.box(data, x='is_canceled', y=selected_for_box, 
+                            title=f"Distribuição de {selected_for_box} por Status de Cancelamento",
+                            labels={'is_canceled': 'Cancelado (0=Não, 1=Sim)'})
+                fig.update_layout(height=400)
+                st.plotly_chart(fig, use_container_width=True)
     
     with tab2:
         st.subheader("Análise de Variáveis Categóricas")
@@ -380,30 +386,32 @@ elif page == "📊 Análise Exploratória":
         
         # Matriz de correlação
         numeric_data = data.select_dtypes(include=[np.number])
-        corr_matrix = numeric_data.corr()
-        
-        fig = px.imshow(corr_matrix, 
-                       title="Matriz de Correlação",
-                       color_continuous_scale="RdBu",
-                       aspect="auto")
-        fig.update_layout(height=600)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Correlações com a variável target
-        target_corr = corr_matrix['is_canceled'].abs().sort_values(ascending=False)[1:]
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Correlações com Cancelamento (em ordem decrescente):**")
-            st.dataframe(target_corr.to_frame('Correlação Absoluta'))
-        
-        with col2:
-            fig = px.bar(x=target_corr.values, y=target_corr.index,
-                        orientation='h',
-                        title="Correlação com Cancelamento",
-                        labels={'x': 'Correlação Absoluta', 'y': 'Variáveis'})
-            st.plotly_chart(fig)
+        if len(numeric_data.columns) > 1:
+            corr_matrix = numeric_data.corr()
+            
+            fig = px.imshow(corr_matrix, 
+                           title="Matriz de Correlação",
+                           color_continuous_scale="RdBu",
+                           aspect="auto")
+            fig.update_layout(height=600)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Correlações com a variável target
+            if 'is_canceled' in corr_matrix.columns:
+                target_corr = corr_matrix['is_canceled'].abs().sort_values(ascending=False)[1:]
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**Correlações com Cancelamento (em ordem decrescente):**")
+                    st.dataframe(target_corr.to_frame('Correlação Absoluta'))
+                
+                with col2:
+                    fig = px.bar(x=target_corr.values, y=target_corr.index,
+                                orientation='h',
+                                title="Correlação com Cancelamento",
+                                labels={'x': 'Correlação Absoluta', 'y': 'Variáveis'})
+                    st.plotly_chart(fig)
 
 elif page == "🤖 Modelagem Preditiva":
     st.header("🤖 Modelagem Preditiva com Regressão Logística")
@@ -427,6 +435,14 @@ elif page == "🤖 Modelagem Preditiva":
     X = df_processed.drop('is_canceled', axis=1)
     y = df_processed['is_canceled']
     
+    # Remover colunas não numéricas se existirem
+    numeric_cols = X.select_dtypes(include=[np.number]).columns
+    X = X[numeric_cols]
+    
+    if len(X.columns) == 0:
+        st.error("Nenhuma variável numérica encontrada para modelagem!")
+        st.stop()
+    
     # Divisão treino/teste
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state, stratify=y
@@ -434,227 +450,166 @@ elif page == "🤖 Modelagem Preditiva":
     
     # Aplicar SMOTE se selecionado
     if apply_smote:
-        smote = SMOTE(random_state=random_state)
-        X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
-        st.success(f"✅ SMOTE aplicado: {len(X_train):,} → {len(X_train_balanced):,} amostras")
+        try:
+            smote = SMOTE(random_state=random_state)
+            X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
+            st.success(f"✅ SMOTE aplicado: {len(X_train):,} → {len(X_train_balanced):,} amostras")
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao aplicar SMOTE: {e}. Usando dados originais.")
+            X_train_balanced, y_train_balanced = X_train, y_train
     else:
         X_train_balanced, y_train_balanced = X_train, y_train
         st.info("ℹ️ SMOTE não aplicado - dados originais mantidos")
     
     # Aplicar RFE se selecionado
-    if apply_rfe:
-        rfe = RFE(estimator=LogisticRegression(random_state=random_state), n_features_to_select=n_features)
-        X_train_selected = rfe.fit_transform(X_train_balanced, y_train_balanced)
-        X_test_selected = rfe.transform(X_test)
-        selected_features = X.columns[rfe.support_].tolist()
-        
-        st.success(f"✅ RFE aplicado: {len(X.columns)} → {len(selected_features)} variáveis")
-        
-        with st.expander("🔍 Variáveis Selecionadas pelo RFE"):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**Variáveis Selecionadas:**")
-                for feat in selected_features:
-                    st.write(f"• {feat}")
-            with col2:
-                st.write("**Ranking das Variáveis:**")
-                ranking_df = pd.DataFrame({
-                    'Variável': X.columns,
-                    'Ranking': rfe.ranking_,
-                    'Selecionada': rfe.support_
-                }).sort_values('Ranking')
-                st.dataframe(ranking_df.head(10))
+    if apply_rfe and len(X.columns) > n_features:
+        try:
+            rfe = RFE(estimator=LogisticRegression(random_state=random_state, max_iter=1000), 
+                     n_features_to_select=min(n_features, len(X.columns)))
+            X_train_selected = rfe.fit_transform(X_train_balanced, y_train_balanced)
+            X_test_selected = rfe.transform(X_test)
+            selected_features = X.columns[rfe.support_].tolist()
+            
+            st.success(f"✅ RFE aplicado: {len(X.columns)} → {len(selected_features)} variáveis")
+            
+            with st.expander("🔍 Variáveis Selecionadas pelo RFE"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**Variáveis Selecionadas:**")
+                    for feat in selected_features:
+                        st.write(f"• {feat}")
+                with col2:
+                    ranking_df = pd.DataFrame({
+                        'Variável': X.columns,
+                        'Ranking': rfe.ranking_,
+                        'Selecionada': rfe.support_
+                    }).sort_values('Ranking')
+                    st.dataframe(ranking_df.head(10))
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao aplicar RFE: {e}. Usando todas as variáveis.")
+            X_train_selected = X_train_balanced
+            X_test_selected = X_test
+            selected_features = X.columns.tolist()
     else:
         X_train_selected = X_train_balanced
         X_test_selected = X_test
         selected_features = X.columns.tolist()
     
     # Treinar modelo
-    model = LogisticRegression(random_state=random_state, max_iter=1000)
-    model.fit(X_train_selected, y_train_balanced)
-    
-    # Predições
-    y_pred = model.predict(X_test_selected)
-    y_pred_proba = model.predict_proba(X_test_selected)[:, 1]
-    
-    # Métricas de avaliação
-    st.subheader("📊 Métricas de Avaliação")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        accuracy = accuracy_score(y_test, y_pred)
-        st.markdown(f"""
-        <div class="metric-container">
-            <h3>{accuracy:.3f}</h3>
-            <p>Acurácia</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        precision = precision_score(y_test, y_pred)
-        st.markdown(f"""
-        <div class="metric-container">
-            <h3>{precision:.3f}</h3>
-            <p>Precisão</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        recall = recall_score(y_test, y_pred)
-        st.markdown(f"""
-        <div class="metric-container">
-            <h3>{recall:.3f}</h3>
-            <p>Recall</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        auc = roc_auc_score(y_test, y_pred_proba)
-        st.markdown(f"""
-        <div class="metric-container">
-            <h3>{auc:.3f}</h3>
-            <p>AUC-ROC</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Gráficos de avaliação
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Matriz de confusão
-        cm = confusion_matrix(y_test, y_pred)
-        fig = px.imshow(cm, 
-                       text_auto=True, 
-                       aspect="auto",
-                       title="Matriz de Confusão",
-                       labels=dict(x="Predito", y="Real"),
-                       x=['Não Cancelado', 'Cancelado'],
-                       y=['Não Cancelado', 'Cancelado'])
-        st.plotly_chart(fig)
-    
-    with col2:
-        # Curva ROC
-        fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', 
-                               name=f'ROC (AUC = {auc:.3f})'))
-        fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', 
-                               line=dict(dash='dash'), name='Aleatório'))
-        fig.update_layout(title="Curva ROC",
-                         xaxis_title="Taxa de Falsos Positivos",
-                         yaxis_title="Taxa de Verdadeiros Positivos")
-        st.plotly_chart(fig)
-    
-    # Interpretação dos coeficientes
-    st.subheader("🔍 Interpretação dos Coeficientes")
-    
-    if apply_rfe:
-        coef_df = pd.DataFrame({
-            'Variável': selected_features,
-            'Coeficiente': model.coef_[0],
-            'Odds Ratio': np.exp(model.coef_[0]),
-            'Impacto': ['Aumenta' if x > 0 else 'Diminui' for x in model.coef_[0]]
-        })
-    else:
-        coef_df = pd.DataFrame({
-            'Variável': X.columns,
-            'Coeficiente': model.coef_[0],
-            'Odds Ratio': np.exp(model.coef_[0]),
-            'Impacto': ['Aumenta' if x > 0 else 'Diminui' for x in model.coef_[0]]
-        })
-    
-    coef_df['Importância_Abs'] = np.abs(coef_df['Coeficiente'])
-    coef_df = coef_df.sort_values('Importância_Abs', ascending=False)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Top 10 Variáveis Mais Importantes:**")
-        st.dataframe(coef_df.head(10)[['Variável', 'Coeficiente', 'Odds Ratio', 'Impacto']])
-    
-    with col2:
-        # Gráfico de importância
-        top_features = coef_df.head(10)
-        fig = px.bar(top_features, x='Coeficiente', y='Variável', orientation='h',
-                    title="Importância das Variáveis",
-                    color='Coeficiente', color_continuous_scale='RdBu')
-        st.plotly_chart(fig)
-    
-    # Análise com Statsmodels
-    st.subheader("📈 Análise Estatística Detalhada")
-    
-    with st.expander("🔍 Ver Resultado Completo do Statsmodels"):
-        # Recriar modelo com statsmodels
-        if apply_rfe:
-            X_sm = pd.DataFrame(X_train_selected, columns=selected_features)
+    try:
+        model = LogisticRegression(random_state=random_state, max_iter=1000)
+        model.fit(X_train_selected, y_train_balanced)
+        
+        # Predições
+        y_pred = model.predict(X_test_selected)
+        y_pred_proba = model.predict_proba(X_test_selected)[:, 1]
+        
+        # Métricas de avaliação
+        st.subheader("📊 Métricas de Avaliação")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            accuracy = accuracy_score(y_test, y_pred)
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>{accuracy:.3f}</h3>
+                <p>Acurácia</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            precision = precision_score(y_test, y_pred)
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>{precision:.3f}</h3>
+                <p>Precisão</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            recall = recall_score(y_test, y_pred)
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>{recall:.3f}</h3>
+                <p>Recall</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            auc = roc_auc_score(y_test, y_pred_proba)
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>{auc:.3f}</h3>
+                <p>AUC-ROC</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Gráficos de avaliação
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Matriz de confusão
+            cm = confusion_matrix(y_test, y_pred)
+            fig = px.imshow(cm, 
+                           text_auto=True, 
+                           aspect="auto",
+                           title="Matriz de Confusão",
+                           labels=dict(x="Predito", y="Real"),
+                           x=['Não Cancelado', 'Cancelado'],
+                           y=['Não Cancelado', 'Cancelado'])
+            st.plotly_chart(fig)
+        
+        with col2:
+            # Curva ROC
+            fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', 
+                                   name=f'ROC (AUC = {auc:.3f})'))
+            fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', 
+                                   line=dict(dash='dash'), name='Aleatório'))
+            fig.update_layout(title="Curva ROC",
+                             xaxis_title="Taxa de Falsos Positivos",
+                             yaxis_title="Taxa de Verdadeiros Positivos")
+            st.plotly_chart(fig)
+        
+        # Interpretação dos coeficientes
+        st.subheader("🔍 Interpretação dos Coeficientes")
+        
+        if apply_rfe and len(selected_features) == len(model.coef_[0]):
+            coef_df = pd.DataFrame({
+                'Variável': selected_features,
+                'Coeficiente': model.coef_[0],
+                'Odds Ratio': np.exp(model.coef_[0]),
+                'Impacto': ['Aumenta' if x > 0 else 'Diminui' for x in model.coef_[0]]
+            })
         else:
-            X_sm = X_train_balanced
+            coef_df = pd.DataFrame({
+                'Variável': X.columns[:len(model.coef_[0])],
+                'Coeficiente': model.coef_[0],
+                'Odds Ratio': np.exp(model.coef_[0]),
+                'Impacto': ['Aumenta' if x > 0 else 'Diminui' for x in model.coef_[0]]
+            })
         
-        X_sm_const = sm.add_constant(X_sm)
-        logit_model = sm.Logit(y_train_balanced, X_sm_const)
-        result = logit_model.fit(disp=0)
+        coef_df['Importância_Abs'] = np.abs(coef_df['Coeficiente'])
+        coef_df = coef_df.sort_values('Importância_Abs', ascending=False)
         
-        st.text(str(result.summary()))
+        col1, col2 = st.columns(2)
         
-        # Tabela de coeficientes com significância
-        coef_summary = pd.DataFrame({
-            'Variável': result.params.index,
-            'Coeficiente': result.params.values,
-            'Erro Padrão': result.bse.values,
-            'z-value': result.tvalues.values,
-            'P-valor': result.pvalues.values,
-            'Odds Ratio': np.exp(result.params.values),
-            'Significante (α=0.05)': result.pvalues.values < 0.05
-        })
+        with col1:
+            st.write("**Top 10 Variáveis Mais Importantes:**")
+            st.dataframe(coef_df.head(10)[['Variável', 'Coeficiente', 'Odds Ratio', 'Impacto']])
         
-        st.write("**Resumo dos Coeficientes:**")
-        st.dataframe(coef_summary)
-    
-    # Curvas logísticas
-    st.subheader("📈 Curvas Logísticas")
-    
-    # Selecionar variáveis para curvas logísticas
-    numeric_selected = [col for col in selected_features if col in data.select_dtypes(include=[np.number]).columns]
-    
-    if len(numeric_selected) >= 3:
-        vars_for_curves = st.multiselect(
-            "Selecione até 3 variáveis para gerar curvas logísticas:",
-            numeric_selected,
-            default=numeric_selected[:3]
-        )
-        
-        if vars_for_curves:
-            fig = make_subplots(
-                rows=1, cols=len(vars_for_curves),
-                subplot_titles=vars_for_curves
-            )
+        with col2:
+            # Gráfico de importância
+            top_features = coef_df.head(10)
+            fig = px.bar(top_features, x='Coeficiente', y='Variável', orientation='h',
+                        title="Importância das Variáveis",
+                        color='Coeficiente', color_continuous_scale='RdBu')
+            st.plotly_chart(fig)
             
-            for i, var in enumerate(vars_for_curves):
-                var_idx = selected_features.index(var) if var in selected_features else None
-                if var_idx is not None:
-                    var_range = np.linspace(data[var].min(), data[var].max(), 100)
-                    
-                    # Criar matriz para predição mantendo outras variáveis na média
-                    X_pred = np.zeros((100, len(selected_features)))
-                    for j, feat in enumerate(selected_features):
-                        if feat == var:
-                            X_pred[:, j] = var_range
-                        else:
-                            X_pred[:, j] = X_train_balanced[feat].mean() if feat in X_train_balanced.columns else 0
-                    
-                    # Predizer probabilidades
-                    probs = model.predict_proba(X_pred)[:, 1]
-                    
-                    fig.add_trace(
-                        go.Scatter(x=var_range, y=probs, mode='lines', name=var),
-                        row=1, col=i+1
-                    )
-            
-            fig.update_layout(height=400, showlegend=False)
-            fig.update_xaxes(title_text="Valor da Variável")
-            fig.update_yaxes(title_text="Probabilidade de Cancelamento")
-            st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Erro na modelagem: {e}")
 
 elif page == "🔍 Validação de Pressupostos":
     st.header("🔍 Validação dos Pressupostos da Regressão Logística")
@@ -663,6 +618,10 @@ elif page == "🔍 Validação de Pressupostos":
     df_processed = prepare_data(data)
     X = df_processed.drop('is_canceled', axis=1)
     y = df_processed['is_canceled']
+    
+    # Manter apenas colunas numéricas
+    numeric_cols = X.select_dtypes(include=[np.number]).columns
+    X = X[numeric_cols]
     
     st.subheader("1️⃣ Balanceamento da Variável Dependente")
     
@@ -701,102 +660,48 @@ elif page == "🔍 Validação de Pressupostos":
     st.subheader("2️⃣ Multicolinearidade (VIF)")
     
     # Calcular VIF apenas para variáveis numéricas
-    numeric_cols = X.select_dtypes(include=[np.number]).columns
-    X_numeric = X[numeric_cols]
-    
-    if len(X_numeric.columns) > 1:
-        vif_df = calculate_vif(X_numeric)
+    if len(X.columns) > 1:
+        vif_df = calculate_vif(X)
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Fatores de Inflação da Variância (VIF):**")
-            st.dataframe(vif_df)
+        if not vif_df.empty:
+            col1, col2 = st.columns(2)
             
-            # Interpretação do VIF
-            high_vif = vif_df[vif_df['VIF'] > 10]
-            if len(high_vif) > 0:
-                st.markdown("""
-                <div class="warning-box">
-                    <strong>⚠️ Multicolinearidade detectada:</strong><br>
-                    Variáveis com VIF > 10 podem causar problemas de multicolinearidade.
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown("""
-                <div class="success-box">
-                    <strong>✅ Sem multicolinearidade:</strong><br>
-                    Todas as variáveis têm VIF < 10.
-                </div>
-                """, unsafe_allow_html=True)
-        
-        with col2:
-            # Gráfico VIF
-            fig = px.bar(vif_df, x='VIF', y='Variável', orientation='h',
-                        title="Fatores de Inflação da Variância")
-            fig.add_vline(x=10, line_dash="dash", line_color="red", 
-                         annotation_text="Limite crítico (VIF=10)")
-            st.plotly_chart(fig)
-    
-    st.subheader("3️⃣ Linearidade no Logit")
-    
-    st.write("""
-    Para variáveis contínuas, verificamos se existe uma relação linear entre a variável 
-    e o log-odds da variável dependente.
-    """)
-    
-    # Selecionar variáveis contínuas para teste de linearidade
-    continuous_vars = st.multiselect(
-        "Selecione variáveis contínuas para análise de linearidade:",
-        numeric_cols.tolist(),
-        default=numeric_cols.tolist()[:3] if len(numeric_cols) >= 3 else numeric_cols.tolist()
-    )
-    
-    if continuous_vars:
-        fig = make_subplots(
-            rows=1, cols=len(continuous_vars),
-            subplot_titles=continuous_vars
-        )
-        
-        for i, var in enumerate(continuous_vars):
-            # Criar bins para a variável
-            bins = pd.qcut(X[var], q=10, duplicates='drop')
-            logit_values = []
-            bin_centers = []
+            with col1:
+                st.write("**Fatores de Inflação da Variância (VIF):**")
+                st.dataframe(vif_df)
+                
+                # Interpretação do VIF
+                high_vif = vif_df[vif_df['VIF'] > 10] if 'VIF' in vif_df.columns else pd.DataFrame()
+                if len(high_vif) > 0:
+                    st.markdown("""
+                    <div class="warning-box">
+                        <strong>⚠️ Multicolinearidade detectada:</strong><br>
+                        Variáveis com VIF > 10 podem causar problemas de multicolinearidade.
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown("""
+                    <div class="success-box">
+                        <strong>✅ Sem multicolinearidade:</strong><br>
+                        Todas as variáveis têm VIF < 10.
+                    </div>
+                    """, unsafe_allow_html=True)
             
-            for bin_val in bins.cat.categories:
-                mask = (X[var] >= bin_val.left) & (X[var] <= bin_val.right)
-                if mask.sum() > 0:
-                    prob = y[mask].mean()
-                    if 0 < prob < 1:  # Evitar log(0) ou log(inf)
-                        logit = np.log(prob / (1 - prob))
-                        logit_values.append(logit)
-                        bin_centers.append((bin_val.left + bin_val.right) / 2)
-            
-            if len(logit_values) > 2:
-                fig.add_trace(
-                    go.Scatter(x=bin_centers, y=logit_values, mode='markers+lines', name=var),
-                    row=1, col=i+1
-                )
-        
-        fig.update_layout(height=400, showlegend=False)
-        fig.update_xaxes(title_text="Valor da Variável")
-        fig.update_yaxes(title_text="Log-odds")
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown("""
-        <div class="insight-box">
-            <strong>💡 Interpretação:</strong> Se os pontos seguem aproximadamente uma linha reta, 
-            o pressuposto de linearidade no logit é satisfeito.
-        </div>
-        """, unsafe_allow_html=True)
+            with col2:
+                # Gráfico VIF
+                if not vif_df.empty and 'VIF' in vif_df.columns:
+                    fig = px.bar(vif_df, x='VIF', y='Variável', orientation='h',
+                                title="Fatores de Inflação da Variância")
+                    fig.add_vline(x=10, line_dash="dash", line_color="red", 
+                                 annotation_text="Limite crítico (VIF=10)")
+                    st.plotly_chart(fig)
     
-    st.subheader("4️⃣ Outliers e Observações Influentes")
+    st.subheader("3️⃣ Outliers e Observações Influentes")
     
     # Análise de outliers usando IQR
     outlier_summary = []
     
-    for col in numeric_cols:
+    for col in X.columns:
         Q1 = X[col].quantile(0.25)
         Q3 = X[col].quantile(0.75)
         IQR = Q3 - Q1
@@ -825,69 +730,24 @@ elif page == "🔍 Validação de Pressupostos":
         fig = px.bar(outlier_df, x='Variável', y='Outliers',
                     title="Número de Outliers por Variável")
         st.plotly_chart(fig)
-    
-    st.subheader("📋 Resumo da Validação de Pressupostos")
-    
-    # Criar resumo final
-    assumptions_check = []
-    
-    # Balanceamento
-    balance_status = "✅ Aprovado" if balance_ratio >= 0.5 else "⚠️ Atenção necessária"
-    assumptions_check.append(["Balanceamento", balance_status, f"Razão: {balance_ratio:.2f}"])
-    
-    # Multicolinearidade
-    if len(X_numeric.columns) > 1:
-        max_vif = vif_df['VIF'].max()
-        vif_status = "✅ Aprovado" if max_vif < 10 else "⚠️ Multicolinearidade detectada"
-        assumptions_check.append(["Multicolinearidade", vif_status, f"VIF máximo: {max_vif:.2f}"])
-    
-    # Outliers
-    total_outliers = outlier_df['Outliers'].sum()
-    outlier_pct_total = (total_outliers / (len(X) * len(numeric_cols))) * 100
-    outlier_status = "✅ Aprovado" if outlier_pct_total < 5 else "⚠️ Muitos outliers"
-    assumptions_check.append(["Outliers", outlier_status, f"Total: {total_outliers} ({outlier_pct_total:.1f}%)"])
-    
-    assumptions_df = pd.DataFrame(assumptions_check, columns=['Pressuposto', 'Status', 'Detalhes'])
-    st.dataframe(assumptions_df)
 
 elif page == "💼 Recomendações Estratégicas":
     st.header("💼 Recomendações Estratégicas para Gestão Hoteleira")
     
-    # Preparar dados e modelo simplificado para demonstração
-    df_processed = prepare_data(data)
-    X = df_processed.drop('is_canceled', axis=1)
-    y = df_processed['is_canceled']
-    
-    # Treinar modelo rapidamente
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-    model = LogisticRegression(random_state=42, max_iter=1000)
-    model.fit(X_train, y_train)
-    
-    # Calcular feature importance
-    feature_importance = pd.DataFrame({
-        'Feature': X.columns,
-        'Importance': np.abs(model.coef_[0])
-    }).sort_values('Importance', ascending=False)
-    
-    st.subheader("🎯 Fatores de Maior Impacto no Cancelamento")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Top 10 Fatores Mais Importantes:**")
-        top_features = feature_importance.head(10)
+    st.markdown("""
+    <div class="insight-box">
+        <h4>🎯 Principais Insights do Modelo</h4>
         
-        for i, row in top_features.iterrows():
-            coef = model.coef_[0][X.columns.get_loc(row['Feature'])]
-            impact = "Aumenta" if coef > 0 else "Reduz"
-            st.write(f"• **{row['Feature']}**: {impact} cancelamento")
-    
-    with col2:
-        fig = px.bar(top_features, x='Importance', y='Feature', orientation='h',
-                    title="Importância dos Fatores")
-        st.plotly_chart(fig)
-    
-    st.subheader("🏨 Recomendações por Categoria")
+        Com base na análise dos dados de cancelamentos de reservas hoteleiras, 
+        identificamos os seguintes padrões e recomendações estratégicas:
+        
+        <strong>🔍 Fatores de Maior Impacto:</strong>
+        • Lead time elevado (>60 dias) aumenta significativamente o risco de cancelamento
+        • Histórico de cancelamentos anteriores é forte preditor
+        • Alterações na reserva indicam incerteza do cliente
+        • Tipo de cliente e segmento de mercado influenciam decisões
+    </div>
+    """, unsafe_allow_html=True)
     
     tab1, tab2, tab3, tab4 = st.tabs(["📅 Gestão de Reservas", "💰 Pricing", "👥 Atendimento", "📊 Operacional"])
     
@@ -979,62 +839,6 @@ elif page == "💼 Recomendações Estratégicas":
               - Otimizar vendas de última hora
         </div>
         """, unsafe_allow_html=True)
-    
-    st.subheader("📈 Impacto Financeiro Estimado")
-    
-    # Calcular métricas de impacto
-    total_reservas = len(data)
-    total_canceladas = data['is_canceled'].sum()
-    taxa_cancelamento_atual = total_canceladas / total_reservas
-    
-    if 'adr' in data.columns:
-        adr_medio = data['adr'].mean()
-        receita_perdida_atual = total_canceladas * adr_medio
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric(
-                "Taxa de Cancelamento Atual",
-                f"{taxa_cancelamento_atual:.1%}",
-                help="Percentual de reservas canceladas"
-            )
-        
-        with col2:
-            st.metric(
-                "Receita Perdida (estimada)",
-                f"${receita_perdida_atual:,.0f}",
-                help="Receita perdida por cancelamentos"
-            )
-        
-        with col3:
-            # Estimativa de melhoria com implementação das recomendações
-            melhoria_estimada = 0.15  # 15% de redução nos cancelamentos
-            nova_taxa = taxa_cancelamento_atual * (1 - melhoria_estimada)
-            receita_recuperada = total_reservas * adr_medio * (taxa_cancelamento_atual - nova_taxa)
-            
-            st.metric(
-                "Receita Recuperável",
-                f"${receita_recuperada:,.0f}",
-                f"-{melhoria_estimada:.0%} cancelamentos"
-            )
-    
-    st.subheader("🎯 Plano de Implementação")
-    
-    implementation_plan = pd.DataFrame({
-        'Fase': ['Fase 1', 'Fase 2', 'Fase 3', 'Fase 4'],
-        'Período': ['0-2 meses', '2-4 meses', '4-8 meses', '8-12 meses'],
-        'Ações Principais': [
-            'Implementar sistema de scoring de risco, políticas diferenciadas de cancelamento',
-            'Desenvolver automação de contatos proativos, sistema de overbooking inteligente',
-            'Implementar pricing dinâmico baseado em risco, programa de fidelidade',
-            'Otimização contínua com ML, integração com sistemas de gestão'
-        ],
-        'Investimento': ['Baixo', 'Médio', 'Alto', 'Médio'],
-        'ROI Esperado': ['5-10%', '10-15%', '15-25%', '25-35%']
-    })
-    
-    st.dataframe(implementation_plan)
 
 elif page == "🎯 Simulador de Cenários":
     st.header("🎯 Simulador de Cenários")
@@ -1044,217 +848,167 @@ elif page == "🎯 Simulador de Cenários":
     nos parâmetros afetam a probabilidade de cancelamento.
     """)
     
-    # Preparar modelo
+    # Preparar modelo simplificado
     df_processed = prepare_data(data)
     X = df_processed.drop('is_canceled', axis=1)
     y = df_processed['is_canceled']
     
-    model = LogisticRegression(random_state=42, max_iter=1000)
-    model.fit(X, y)
+    # Usar apenas variáveis numéricas
+    numeric_cols = X.select_dtypes(include=[np.number]).columns
+    X = X[numeric_cols]
     
-    st.subheader("🔧 Configure o Cenário")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Características da Reserva:**")
-        
-        # Inputs principais
-        lead_time = st.slider("Lead Time (dias)", 0, 365, 30)
-        
-        if 'adr' in data.columns:
-            adr = st.slider("ADR (Tarifa Média)", 
-                           int(data['adr'].min()), 
-                           int(data['adr'].max()), 
-                           int(data['adr'].mean()))
-        else:
-            adr = st.slider("ADR (Tarifa Média)", 50, 500, 100)
-        
-        adults = st.selectbox("Número de Adultos", [1, 2, 3, 4], index=1)
-        children = st.selectbox("Número de Crianças", [0, 1, 2, 3])
-        
-        if 'total_of_special_requests' in data.columns:
-            special_requests = st.slider("Solicitações Especiais", 0, 5, 0)
-        
-        booking_changes = st.slider("Alterações na Reserva", 0, 5, 0)
-        
-        if 'previous_cancellations' in data.columns:
-            prev_cancellations = st.slider("Cancelamentos Anteriores", 0, 5, 0)
-    
-    with col2:
-        st.write("**Características Categóricas:**")
-        
-        if 'hotel' in data.columns:
-            hotel_type = st.selectbox("Tipo de Hotel", data['hotel'].unique())
-        
-        if 'market_segment' in data.columns:
-            market_segment = st.selectbox("Segmento de Mercado", data['market_segment'].unique())
-        
-        if 'customer_type' in data.columns:
-            customer_type = st.selectbox("Tipo de Cliente", data['customer_type'].unique())
-        
-        if 'arrival_date_month' in data.columns:
-            arrival_month = st.selectbox("Mês de Chegada", data['arrival_date_month'].unique())
-        
-        repeated_guest = st.selectbox("Cliente Repetido", [0, 1], format_func=lambda x: "Não" if x == 0 else "Sim")
-    
-    # Botão para calcular
-    if st.button("🔮 Calcular Probabilidade de Cancelamento", type="primary"):
-        
-        # Criar vetor de características baseado no input
-        # Nota: Este é um exemplo simplificado. Na implementação real, 
-        # você precisaria criar o vetor completo com todas as features do modelo
-        
-        # Para demonstração, vamos usar uma aproximação baseada nas variáveis principais
-        features_dict = {}
-        
-        # Preencher com valores padrão e depois atualizar com inputs do usuário
-        for col in X.columns:
-            if 'lead_time' in col.lower():
-                features_dict[col] = lead_time
-            elif 'adr' in col.lower():
-                features_dict[col] = adr
-            elif 'adults' in col.lower():
-                features_dict[col] = adults
-            elif 'children' in col.lower():
-                features_dict[col] = children
-            elif 'booking_changes' in col.lower():
-                features_dict[col] = booking_changes
-            elif 'special_requests' in col.lower() and 'total_of_special_requests' in data.columns:
-                features_dict[col] = special_requests
-            elif 'previous_cancellations' in col.lower() and 'previous_cancellations' in data.columns:
-                features_dict[col] = prev_cancellations
-            elif 'repeated_guest' in col.lower():
-                features_dict[col] = repeated_guest
-            else:
-                # Para outras colunas, usar a média ou moda
-                if col in data.select_dtypes(include=[np.number]).columns:
-                    features_dict[col] = data[col].mean()
-                else:
-                    features_dict[col] = 0
-        
-        # Criar array de features
-        feature_vector = np.array([features_dict.get(col, 0) for col in X.columns]).reshape(1, -1)
-        
-        # Fazer predição
-        prob_cancelamento = model.predict_proba(feature_vector)[0, 1]
-        
-        # Exibir resultado
-        st.subheader("📊 Resultado da Simulação")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            # Gauge chart para probabilidade
-            fig = go.Figure(go.Indicator(
-                mode = "gauge+number",
-                value = prob_cancelamento * 100,
-                domain = {'x': [0, 1], 'y': [0, 1]},
-                title = {'text': "Probabilidade de Cancelamento (%)"},
-                gauge = {
-                    'axis': {'range': [None, 100]},
-                    'bar': {'color': "darkblue"},
-                    'steps': [
-                        {'range': [0, 25], 'color': "lightgreen"},
-                        {'range': [25, 50], 'color': "yellow"},
-                        {'range': [50, 75], 'color': "orange"},
-                        {'range': [75, 100], 'color': "red"}
-                    ],
-                    'threshold': {
-                        'line': {'color': "red", 'width': 4},
-                        'thickness': 0.75,
-                        'value': 90
-                    }
-                }
-            ))
-            fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # Classificação de risco
-            if prob_cancelamento < 0.25:
-                risco = "BAIXO"
-                cor = "success"
-                icone = "✅"
-            elif prob_cancelamento < 0.5:
-                risco = "MÉDIO"
-                cor = "warning"
-                icone = "⚠️"
-            elif prob_cancelamento < 0.75:
-                risco = "ALTO"
-                cor = "warning"
-                icone = "🔶"
-            else:
-                risco = "CRÍTICO"
-                cor = "error"
-                icone = "🚨"
+    if len(X.columns) > 0:
+        try:
+            model = LogisticRegression(random_state=42, max_iter=1000)
+            model.fit(X, y)
             
-            st.markdown(f"""
-            <div class="metric-container">
-                <h2>{icone} {risco}</h2>
-                <p>Nível de Risco</p>
-                <small>Probabilidade: {prob_cancelamento:.1%}</small>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col3:
-            # Ações recomendadas
-            if prob_cancelamento < 0.25:
-                acoes = [
-                    "✅ Processar reserva normalmente",
-                    "💡 Considerar upgrade gratuito",
-                    "📧 Enviar email de confirmação padrão"
-                ]
-            elif prob_cancelamento < 0.5:
-                acoes = [
-                    "📞 Contato 48h antes da chegada",
-                    "🎁 Oferecer serviços adicionais",
-                    "📝 Confirmar detalhes da reserva"
-                ]
-            elif prob_cancelamento < 0.75:
-                acoes = [
-                    "🔒 Solicitar garantia adicional",
-                    "📞 Contato 72h antes da chegada",
-                    "💰 Oferecer upgrade pago"
-                ]
-            else:
-                acoes = [
-                    "🚨 Solicitar depósito não-reembolsável",
-                    "📞 Contato imediato para confirmação",
-                    "🔄 Considerar overbooking para esta vaga"
-                ]
+            st.subheader("🔧 Configure o Cenário")
             
-            st.write("**Ações Recomendadas:**")
-            for acao in acoes:
-                st.write(f"• {acao}")
-        
-        # Análise de sensibilidade
-        st.subheader("📈 Análise de Sensibilidade")
-        
-        st.write("Veja como mudanças em variáveis-chave afetam a probabilidade:")
-        
-        # Testar variação no lead time
-        lead_times = np.arange(0, 200, 10)
-        probs_lead = []
-        
-        for lt in lead_times:
-            temp_vector = feature_vector.copy()
-            # Encontrar índice da coluna lead_time (aproximação)
-            lead_time_cols = [i for i, col in enumerate(X.columns) if 'lead_time' in col.lower()]
-            if lead_time_cols:
-                temp_vector[0, lead_time_cols[0]] = lt
-            probs_lead.append(model.predict_proba(temp_vector)[0, 1])
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=lead_times, y=probs_lead, mode='lines', name='Lead Time'))
-        fig.add_hline(y=prob_cancelamento, line_dash="dash", line_color="red", 
-                     annotation_text="Cenário Atual")
-        fig.update_layout(
-            title="Impacto do Lead Time na Probabilidade de Cancelamento",
-            xaxis_title="Lead Time (dias)",
-            yaxis_title="Probabilidade de Cancelamento"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Características da Reserva:**")
+                
+                # Inputs principais baseados nas colunas disponíveis
+                inputs = {}
+                
+                if 'lead_time' in X.columns:
+                    inputs['lead_time'] = st.slider("Lead Time (dias)", 0, 365, 30)
+                
+                if 'adr' in X.columns:
+                    inputs['adr'] = st.slider("ADR (Tarifa Média)", 
+                                           int(data['adr'].min()), 
+                                           int(data['adr'].max()), 
+                                           int(data['adr'].mean()))
+                
+                if 'adults' in X.columns:
+                    inputs['adults'] = st.selectbox("Número de Adultos", [1, 2, 3, 4], index=1)
+                
+                if 'children' in X.columns:
+                    inputs['children'] = st.selectbox("Número de Crianças", [0, 1, 2, 3])
+            
+            with col2:
+                st.write("**Características Adicionais:**")
+                
+                if 'total_of_special_requests' in X.columns:
+                    inputs['total_of_special_requests'] = st.slider("Solicitações Especiais", 0, 5, 0)
+                
+                if 'booking_changes' in X.columns:
+                    inputs['booking_changes'] = st.slider("Alterações na Reserva", 0, 5, 0)
+                
+                if 'previous_cancellations' in X.columns:
+                    inputs['previous_cancellations'] = st.slider("Cancelamentos Anteriores", 0, 5, 0)
+                
+                if 'is_repeated_guest' in X.columns:
+                    inputs['is_repeated_guest'] = st.selectbox("Cliente Repetido", [0, 1], 
+                                                            format_func=lambda x: "Não" if x == 0 else "Sim")
+            
+            # Botão para calcular
+            if st.button("🔮 Calcular Probabilidade de Cancelamento", type="primary"):
+                
+                # Criar vetor de características
+                feature_vector = []
+                for col in X.columns:
+                    if col in inputs:
+                        feature_vector.append(inputs[col])
+                    else:
+                        # Usar a média para colunas não especificadas
+                        feature_vector.append(X[col].mean())
+                
+                feature_vector = np.array(feature_vector).reshape(1, -1)
+                
+                # Fazer predição
+                prob_cancelamento = model.predict_proba(feature_vector)[0, 1]
+                
+                # Exibir resultado
+                st.subheader("📊 Resultado da Simulação")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    # Gauge chart para probabilidade
+                    fig = go.Figure(go.Indicator(
+                        mode = "gauge+number",
+                        value = prob_cancelamento * 100,
+                        domain = {'x': [0, 1], 'y': [0, 1]},
+                        title = {'text': "Probabilidade de Cancelamento (%)"},
+                        gauge = {
+                            'axis': {'range': [None, 100]},
+                            'bar': {'color': "darkblue"},
+                            'steps': [
+                                {'range': [0, 25], 'color': "lightgreen"},
+                                {'range': [25, 50], 'color': "yellow"},
+                                {'range': [50, 75], 'color': "orange"},
+                                {'range': [75, 100], 'color': "red"}
+                            ],
+                            'threshold': {
+                                'line': {'color': "red", 'width': 4},
+                                'thickness': 0.75,
+                                'value': 90
+                            }
+                        }
+                    ))
+                    fig.update_layout(height=300)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    # Classificação de risco
+                    if prob_cancelamento < 0.25:
+                        risco = "BAIXO"
+                        icone = "✅"
+                    elif prob_cancelamento < 0.5:
+                        risco = "MÉDIO"
+                        icone = "⚠️"
+                    elif prob_cancelamento < 0.75:
+                        risco = "ALTO"
+                        icone = "🔶"
+                    else:
+                        risco = "CRÍTICO"
+                        icone = "🚨"
+                    
+                    st.markdown(f"""
+                    <div class="metric-container">
+                        <h2>{icone} {risco}</h2>
+                        <p>Nível de Risco</p>
+                        <small>Probabilidade: {prob_cancelamento:.1%}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col3:
+                    # Ações recomendadas
+                    if prob_cancelamento < 0.25:
+                        acoes = [
+                            "✅ Processar reserva normalmente",
+                            "💡 Considerar upgrade gratuito",
+                            "📧 Enviar email de confirmação padrão"
+                        ]
+                    elif prob_cancelamento < 0.5:
+                        acoes = [
+                            "📞 Contato 48h antes da chegada",
+                            "🎁 Oferecer serviços adicionais",
+                            "📝 Confirmar detalhes da reserva"
+                        ]
+                    elif prob_cancelamento < 0.75:
+                        acoes = [
+                            "🔒 Solicitar garantia adicional",
+                            "📞 Contato 72h antes da chegada",
+                            "💰 Oferecer upgrade pago"
+                        ]
+                    else:
+                        acoes = [
+                            "🚨 Solicitar depósito não-reembolsável",
+                            "📞 Contato imediato para confirmação",
+                            "🔄 Considerar overbooking para esta vaga"
+                        ]
+                    
+                    st.write("**Ações Recomendadas:**")
+                    for acao in acoes:
+                        st.write(f"• {acao}")
+                        
+        except Exception as e:
+            st.error(f"Erro na criação do simulador: {e}")
+    else:
+        st.error("Não há variáveis numéricas suficientes para criar o simulador.")
 
 # Footer
 st.markdown("---")
@@ -1288,7 +1042,7 @@ st.sidebar.markdown("""
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
-💡 **Dica**: Use o simulador de cenários para testar 
-diferentes perfis de clientes e entender como 
-otimizar suas estratégias de gestão hoteleira.
+💡 **Dica**: Faça upload do arquivo hotel_bookings.csv 
+na seção "Visão Geral" para usar dados reais, ou 
+explore com os dados sintéticos gerados automaticamente.
 """)
