@@ -551,7 +551,7 @@ elif page == "🤖 Modelagem e Resultados":
             fig.update_layout(height=400)
             st.plotly_chart(fig)
         
-        # Curvas logísticas - Implementação melhorada
+        # Curvas logísticas - Implementação corrigida
         st.subheader("📈 Curvas Logísticas")
         
         # Identificar variáveis numéricas principais
@@ -567,22 +567,47 @@ elif page == "🤖 Modelagem e Resultados":
         if len(numeric_features) > 0:
             st.info(f"📊 Gerando curvas logísticas para as {len(numeric_features)} variáveis numéricas mais importantes")
             
+            # Calcular médias sem NaN uma vez só
+            X_train_clean = X_train.fillna(0)  # Garantir que não há NaN
+            feature_means = X_train_clean.mean().to_dict()
+            
+            curves_generated = 0
             for var in numeric_features:
-                if var in data.columns:
+                if var in data.columns and curves_generated < 3:
                     try:
+                        # Verificar se a variável tem dados válidos
+                        if data[var].isna().all():
+                            continue
+                            
                         # Usar range mais controlado
                         var_min = data[var].quantile(0.05)  # 5º percentil
                         var_max = data[var].quantile(0.95)  # 95º percentil
-                        var_range = np.linspace(var_min, var_max, 30)  # Menos pontos para otimizar
                         
-                        # Criar dados para predição
-                        X_curve = pd.DataFrame()
+                        if pd.isna(var_min) or pd.isna(var_max) or var_min == var_max:
+                            continue
+                            
+                        var_range = np.linspace(var_min, var_max, 30)
+                        
+                        # Criar dados para predição sem NaN
+                        X_curve = pd.DataFrame(index=range(len(var_range)))
                         
                         for col in selected_features:
                             if col == var:
                                 X_curve[col] = var_range
                             else:
-                                X_curve[col] = X_train[col].mean()
+                                # Usar média sem NaN, com fallback para 0
+                                mean_val = feature_means.get(col, 0)
+                                if pd.isna(mean_val):
+                                    mean_val = 0
+                                X_curve[col] = mean_val
+                        
+                        # Garantir que não há NaN no DataFrame final
+                        X_curve = X_curve.fillna(0)
+                        
+                        # Verificar se ainda há NaN
+                        if X_curve.isna().any().any():
+                            st.warning(f"Dados com valores faltantes detectados para {var}")
+                            continue
                         
                         # Calcular probabilidades
                         probs = model.predict_proba(X_curve)[:, 1]
@@ -594,7 +619,7 @@ elif page == "🤖 Modelagem e Resultados":
                             y=probs, 
                             mode='lines', 
                             name=f'Probabilidade vs {var}',
-                            line=dict(width=3)
+                            line=dict(width=3, color='#1f77b4')
                         ))
                         
                         fig.update_layout(
@@ -602,13 +627,23 @@ elif page == "🤖 Modelagem e Resultados":
                             xaxis_title=var,
                             yaxis_title="Probabilidade de Cancelamento",
                             height=400,
-                            template="plotly_white"
+                            template="plotly_white",
+                            showlegend=False
                         )
                         
+                        # Adicionar linha de referência
+                        fig.add_hline(y=0.5, line_dash="dash", line_color="red", 
+                                     annotation_text="50% de probabilidade")
+                        
                         st.plotly_chart(fig, use_container_width=True)
+                        curves_generated += 1
                         
                     except Exception as e:
-                        st.warning(f"Não foi possível gerar curva para {var}: {e}")
+                        st.warning(f"Erro ao gerar curva para {var}: {str(e)[:100]}...")
+                        continue
+            
+            if curves_generated == 0:
+                st.info("Não foi possível gerar curvas logísticas com os dados disponíveis")
         else:
             st.info("Nenhuma variável numérica principal disponível para curvas logísticas")
     
