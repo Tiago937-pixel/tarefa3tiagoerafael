@@ -85,23 +85,37 @@ def load_data():
 def generate_synthetic_data():
     """Gera dados sintéticos"""
     np.random.seed(42)
-    n = 5000
+    n = 3000  # Reduzido para evitar problemas de memória
+    
+    # Variáveis principais
+    lead_time = np.random.exponential(30, n).astype(int)
+    adr = np.random.gamma(2, 50, n)
+    adults = np.random.choice([1, 2, 3, 4], n, p=[0.2, 0.6, 0.15, 0.05])
+    
+    # Criar target baseado em lógica realista
+    prob_cancel = (
+        0.1 +  # baseline
+        0.3 * (lead_time > 60) +  
+        0.2 * (adr > 150) +  
+        0.1 * (adults == 1)
+    )
+    prob_cancel = np.clip(prob_cancel, 0, 0.8)
+    is_canceled = np.random.binomial(1, prob_cancel, n)
     
     data = pd.DataFrame({
         'hotel': np.random.choice(['Resort Hotel', 'City Hotel'], n, p=[0.3, 0.7]),
-        'is_canceled': np.random.choice([0, 1], n, p=[0.63, 0.37]),
-        'lead_time': np.random.exponential(30, n).astype(int),
-        'arrival_date_month': np.random.choice(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                                              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], n),
+        'is_canceled': is_canceled,
+        'lead_time': lead_time,
+        'arrival_date_month': np.random.choice(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'], n),
         'stays_in_weekend_nights': np.random.poisson(1, n),
         'stays_in_week_nights': np.random.poisson(2, n),
-        'adults': np.random.choice([1, 2, 3, 4], n, p=[0.2, 0.6, 0.15, 0.05]),
+        'adults': adults,
         'children': np.random.choice([0, 1, 2], n, p=[0.8, 0.15, 0.05]),
         'babies': np.random.choice([0, 1], n, p=[0.95, 0.05]),
-        'meal': np.random.choice(['BB', 'HB', 'FB', 'SC'], n, p=[0.6, 0.2, 0.1, 0.1]),
-        'market_segment': np.random.choice(['Online TA', 'Direct', 'Corporate', 'Groups'], n, p=[0.4, 0.3, 0.2, 0.1]),
-        'customer_type': np.random.choice(['Transient', 'Contract', 'Group'], n, p=[0.8, 0.1, 0.1]),
-        'adr': np.random.gamma(2, 50, n),
+        'meal': np.random.choice(['BB', 'HB', 'FB'], n, p=[0.7, 0.2, 0.1]),
+        'market_segment': np.random.choice(['Online TA', 'Direct', 'Corporate'], n, p=[0.5, 0.3, 0.2]),
+        'customer_type': np.random.choice(['Transient', 'Contract'], n, p=[0.8, 0.2]),
+        'adr': adr,
         'total_of_special_requests': np.random.poisson(0.5, n),
         'booking_changes': np.random.poisson(0.2, n),
         'previous_cancellations': np.random.poisson(0.1, n),
@@ -110,6 +124,48 @@ def generate_synthetic_data():
     })
     
     return data
+
+def prepare_modeling_data(data):
+    """Prepara dados para modelagem de forma robusta"""
+    try:
+        df = data.copy()
+        
+        # Selecionar apenas variáveis essenciais para evitar problemas
+        essential_numeric = ['lead_time', 'adr', 'adults', 'children', 'babies', 
+                           'stays_in_weekend_nights', 'stays_in_week_nights',
+                           'total_of_special_requests', 'booking_changes', 
+                           'previous_cancellations', 'required_car_parking_spaces', 
+                           'is_repeated_guest']
+        
+        essential_categorical = ['hotel', 'meal', 'market_segment', 'customer_type']
+        
+        # Filtrar apenas colunas que existem
+        numeric_cols = [col for col in essential_numeric if col in df.columns]
+        categorical_cols = [col for col in essential_categorical if col in df.columns]
+        
+        # Começar com variáveis numéricas
+        X = df[numeric_cols].copy()
+        
+        # Adicionar variáveis categóricas de forma controlada
+        for col in categorical_cols:
+            if col in df.columns:
+                # Limitar número de categorias para evitar explosão de dimensionalidade
+                top_categories = df[col].value_counts().head(3).index.tolist()
+                df_temp = df[col].apply(lambda x: x if x in top_categories else 'Other')
+                
+                # Criar dummies
+                dummies = pd.get_dummies(df_temp, prefix=col, dtype=int)
+                X = pd.concat([X, dummies], axis=1)
+        
+        # Garantir que não há valores missing
+        X = X.fillna(0)
+        y = df['is_canceled']
+        
+        return X, y
+        
+    except Exception as e:
+        st.error(f"Erro na preparação dos dados: {e}")
+        return None, None
 
 # Carregar dados
 data = load_data()
@@ -197,34 +253,36 @@ elif page == "📊 Análise Exploratória":
         if 'is_canceled' in numeric_cols:
             numeric_cols.remove('is_canceled')
         
-        selected_numeric = st.multiselect(
-            "Selecione variáveis numéricas:",
-            numeric_cols,
-            default=numeric_cols[:4] if len(numeric_cols) >= 4 else numeric_cols
-        )
-        
-        if selected_numeric:
-            # Estatísticas
-            st.write("**Estatísticas Descritivas:**")
-            st.dataframe(data[selected_numeric].describe())
+        if len(numeric_cols) > 0:
+            selected_numeric = st.multiselect(
+                "Selecione variáveis numéricas:",
+                numeric_cols,
+                default=numeric_cols[:4] if len(numeric_cols) >= 4 else numeric_cols
+            )
             
-            # Histogramas
-            n_vars = min(len(selected_numeric), 4)
-            fig = make_subplots(rows=2, cols=2, subplot_titles=selected_numeric[:n_vars])
-            
-            for i, col in enumerate(selected_numeric[:n_vars]):
-                row = i // 2 + 1
-                col_pos = i % 2 + 1
-                fig.add_trace(go.Histogram(x=data[col], name=col), row=row, col=col_pos)
-            
-            fig.update_layout(height=600, showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Boxplot por cancelamento
-            selected_for_box = st.selectbox("Variável para análise detalhada:", selected_numeric)
-            fig = px.box(data, x='is_canceled', y=selected_for_box, 
-                        title=f"{selected_for_box} por Status de Cancelamento")
-            st.plotly_chart(fig, use_container_width=True)
+            if selected_numeric:
+                # Estatísticas
+                st.write("**Estatísticas Descritivas:**")
+                st.dataframe(data[selected_numeric].describe())
+                
+                # Histogramas
+                if len(selected_numeric) >= 2:
+                    n_vars = min(len(selected_numeric), 4)
+                    fig = make_subplots(rows=2, cols=2, subplot_titles=selected_numeric[:n_vars])
+                    
+                    for i, col in enumerate(selected_numeric[:n_vars]):
+                        row = (i // 2) + 1
+                        col_pos = (i % 2) + 1
+                        fig.add_trace(go.Histogram(x=data[col], name=col), row=row, col=col_pos)
+                    
+                    fig.update_layout(height=600, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Boxplot por cancelamento
+                selected_for_box = st.selectbox("Variável para análise detalhada:", selected_numeric)
+                fig = px.box(data, x='is_canceled', y=selected_for_box, 
+                            title=f"{selected_for_box} por Status de Cancelamento")
+                st.plotly_chart(fig, use_container_width=True)
     
     with tab2:
         st.subheader("Variáveis Categóricas")
@@ -270,171 +328,198 @@ elif page == "📊 Análise Exploratória":
 elif page == "🤖 Modelagem e Resultados":
     st.header("🤖 Modelagem com Regressão Logística")
     
-    # Preparar dados de forma simples
-    df = data.copy()
-    
-    # Encoding simples das categóricas
-    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-    
-    for col in categorical_cols:
-        df = pd.concat([df, pd.get_dummies(df[col], prefix=col, dtype=int)], axis=1)
-        df = df.drop(columns=[col])
-    
-    # Separar X e y
-    X = df.drop('is_canceled', axis=1)
-    y = df['is_canceled']
-    
-    # Configurações na sidebar
-    st.sidebar.subheader("⚙️ Configurações")
-    test_size = st.sidebar.slider("Tamanho do teste", 0.1, 0.5, 0.3)
-    apply_rfe = st.sidebar.checkbox("Aplicar RFE", value=True)
-    
-    if apply_rfe:
-        n_features = st.sidebar.slider("Número de features", 5, min(20, len(X.columns)), 12)
-    
-    # Divisão dos dados
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
-    
-    # RFE se aplicável
-    if apply_rfe:
-        rfe = RFE(LogisticRegression(max_iter=1000), n_features_to_select=n_features)
-        X_train = pd.DataFrame(rfe.fit_transform(X_train, y_train), 
-                              columns=X.columns[rfe.support_], index=X_train.index)
-        X_test = pd.DataFrame(rfe.transform(X_test), 
-                             columns=X.columns[rfe.support_], index=X_test.index)
-        selected_features = X_train.columns.tolist()
-    else:
-        selected_features = X.columns.tolist()
-    
-    st.write(f"**Variáveis selecionadas:** {len(selected_features)}")
-    with st.expander("Ver variáveis"):
-        st.write(selected_features)
-    
-    # Treinar modelo
-    model = LogisticRegression(max_iter=1000)
-    model.fit(X_train, y_train)
-    
-    # Predições
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
-    
-    # Métricas
-    st.subheader("📊 Métricas de Avaliação")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        accuracy = accuracy_score(y_test, y_pred)
-        st.markdown(f"""
-        <div class="metric-container">
-            <h3>{accuracy:.3f}</h3>
-            <p>Acurácia</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        precision = precision_score(y_test, y_pred)
-        st.markdown(f"""
-        <div class="metric-container">
-            <h3>{precision:.3f}</h3>
-            <p>Precisão</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        recall = recall_score(y_test, y_pred)
-        st.markdown(f"""
-        <div class="metric-container">
-            <h3>{recall:.3f}</h3>
-            <p>Recall</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        auc = roc_auc_score(y_test, y_proba)
-        st.markdown(f"""
-        <div class="metric-container">
-            <h3>{auc:.3f}</h3>
-            <p>AUC-ROC</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Gráficos
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Matriz de confusão
-        cm = confusion_matrix(y_test, y_pred)
-        fig = px.imshow(cm, text_auto=True, title="Matriz de Confusão",
-                       x=['Não Cancelado', 'Cancelado'], y=['Não Cancelado', 'Cancelado'])
-        st.plotly_chart(fig)
-    
-    with col2:
-        # Curva ROC
-        fpr, tpr, _ = roc_curve(y_test, y_proba)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name=f'ROC (AUC = {auc:.3f})'))
-        fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', line=dict(dash='dash'), name='Aleatório'))
-        fig.update_layout(title="Curva ROC", xaxis_title="FPR", yaxis_title="TPR")
-        st.plotly_chart(fig)
-    
-    # Coeficientes
-    st.subheader("🔍 Interpretação dos Coeficientes")
-    
-    coef_df = pd.DataFrame({
-        'Variável': selected_features,
-        'Coeficiente': model.coef_[0],
-        'Odds Ratio': np.exp(model.coef_[0]),
-        'Impacto': ['Aumenta' if x > 0 else 'Diminui' for x in model.coef_[0]]
-    })
-    
-    coef_df['Importância'] = np.abs(coef_df['Coeficiente'])
-    coef_df = coef_df.sort_values('Importância', ascending=False)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Top 10 Variáveis:**")
-        st.dataframe(coef_df.head(10)[['Variável', 'Coeficiente', 'Odds Ratio', 'Impacto']])
-    
-    with col2:
-        top_features = coef_df.head(10)
-        fig = px.bar(top_features, x='Coeficiente', y='Variável', orientation='h',
-                    title="Importância das Variáveis", color='Coeficiente', color_continuous_scale='RdBu')
-        st.plotly_chart(fig)
-    
-    # Curvas logísticas
-    st.subheader("📈 Curvas Logísticas")
-    
-    # Selecionar 3 variáveis numéricas mais importantes
-    numeric_features = [col for col in selected_features if col in data.select_dtypes(include=[np.number]).columns]
-    top_numeric = [col for col in coef_df['Variável'].tolist() if col in numeric_features][:3]
-    
-    if top_numeric:
-        for var in top_numeric:
-            if var in data.columns:
-                var_range = np.linspace(data[var].min(), data[var].max(), 100)
+    try:
+        # Preparar dados
+        with st.spinner("Preparando dados..."):
+            X, y = prepare_modeling_data(data)
+        
+        if X is None or y is None:
+            st.error("Erro na preparação dos dados")
+            st.stop()
+        
+        st.success(f"Dados preparados: {len(X)} amostras, {len(X.columns)} variáveis")
+        
+        # Configurações na sidebar
+        st.sidebar.subheader("⚙️ Configurações")
+        test_size = st.sidebar.slider("Tamanho do teste", 0.1, 0.5, 0.3)
+        apply_rfe = st.sidebar.checkbox("Aplicar RFE", value=True)
+        
+        if apply_rfe:
+            max_features = min(15, len(X.columns))
+            n_features = st.sidebar.slider("Número de features", 5, max_features, min(10, max_features))
+        
+        # Divisão dos dados
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42, stratify=y
+        )
+        
+        # RFE se aplicável
+        if apply_rfe and len(X.columns) > n_features:
+            with st.spinner("Aplicando RFE..."):
+                rfe = RFE(LogisticRegression(max_iter=1000, random_state=42), n_features_to_select=n_features)
+                X_train_rfe = rfe.fit_transform(X_train, y_train)
+                X_test_rfe = rfe.transform(X_test)
                 
-                # Criar dados para predição mantendo outras variáveis na média
-                X_curve = pd.DataFrame(columns=selected_features)
-                for col in selected_features:
-                    if col == var:
-                        X_curve[col] = var_range
-                    else:
-                        X_curve[col] = X_train[col].mean()
+                selected_features = X.columns[rfe.support_].tolist()
                 
-                # Calcular probabilidades
-                probs = model.predict_proba(X_curve)[:, 1]
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=var_range, y=probs, mode='lines', name=f'{var}'))
-                fig.update_layout(
-                    title=f"Probabilidade de Cancelamento vs {var}",
-                    xaxis_title=var,
-                    yaxis_title="Probabilidade de Cancelamento",
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                # Converter de volta para DataFrame
+                X_train = pd.DataFrame(X_train_rfe, columns=selected_features, index=X_train.index)
+                X_test = pd.DataFrame(X_test_rfe, columns=selected_features, index=X_test.index)
+        else:
+            selected_features = X.columns.tolist()
+        
+        st.write(f"**Variáveis selecionadas:** {len(selected_features)}")
+        with st.expander("Ver variáveis selecionadas"):
+            for i, feat in enumerate(selected_features, 1):
+                st.write(f"{i}. {feat}")
+        
+        # Treinar modelo
+        with st.spinner("Treinando modelo..."):
+            model = LogisticRegression(max_iter=1000, random_state=42)
+            model.fit(X_train, y_train)
+            
+            # Predições
+            y_pred = model.predict(X_test)
+            y_proba = model.predict_proba(X_test)[:, 1]
+        
+        # Métricas
+        st.subheader("📊 Métricas de Avaliação")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            accuracy = accuracy_score(y_test, y_pred)
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>{accuracy:.3f}</h3>
+                <p>Acurácia</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            precision = precision_score(y_test, y_pred)
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>{precision:.3f}</h3>
+                <p>Precisão</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            recall = recall_score(y_test, y_pred)
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>{recall:.3f}</h3>
+                <p>Recall</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            auc = roc_auc_score(y_test, y_proba)
+            st.markdown(f"""
+            <div class="metric-container">
+                <h3>{auc:.3f}</h3>
+                <p>AUC-ROC</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Gráficos
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Matriz de confusão
+            cm = confusion_matrix(y_test, y_pred)
+            fig = px.imshow(cm, text_auto=True, title="Matriz de Confusão",
+                           x=['Não Cancelado', 'Cancelado'], y=['Não Cancelado', 'Cancelado'])
+            st.plotly_chart(fig)
+        
+        with col2:
+            # Curva ROC
+            fpr, tpr, _ = roc_curve(y_test, y_proba)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name=f'ROC (AUC = {auc:.3f})'))
+            fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', line=dict(dash='dash'), name='Aleatório'))
+            fig.update_layout(title="Curva ROC", xaxis_title="FPR", yaxis_title="TPR")
+            st.plotly_chart(fig)
+        
+        # Coeficientes
+        st.subheader("🔍 Interpretação dos Coeficientes")
+        
+        coef_df = pd.DataFrame({
+            'Variável': selected_features,
+            'Coeficiente': model.coef_[0],
+            'Odds Ratio': np.exp(model.coef_[0]),
+            'Impacto': ['Aumenta' if x > 0 else 'Diminui' for x in model.coef_[0]]
+        })
+        
+        coef_df['Importância'] = np.abs(coef_df['Coeficiente'])
+        coef_df = coef_df.sort_values('Importância', ascending=False)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Top 10 Variáveis:**")
+            display_df = coef_df.head(10)[['Variável', 'Coeficiente', 'Odds Ratio', 'Impacto']].copy()
+            display_df['Coeficiente'] = display_df['Coeficiente'].round(3)
+            display_df['Odds Ratio'] = display_df['Odds Ratio'].round(3)
+            st.dataframe(display_df)
+        
+        with col2:
+            top_features = coef_df.head(10)
+            fig = px.bar(top_features, x='Coeficiente', y='Variável', orientation='h',
+                        title="Importância das Variáveis", color='Coeficiente', color_continuous_scale='RdBu')
+            st.plotly_chart(fig)
+        
+        # Curvas logísticas - simplificadas
+        st.subheader("📈 Curvas Logísticas")
+        
+        # Pegar as 3 variáveis numéricas mais importantes
+        numeric_features = []
+        original_numeric = data.select_dtypes(include=[np.number]).columns.tolist()
+        
+        for var in coef_df['Variável'].tolist():
+            if var in original_numeric and var != 'is_canceled':
+                numeric_features.append(var)
+            if len(numeric_features) >= 3:
+                break
+        
+        if len(numeric_features) > 0:
+            for var in numeric_features:
+                if var in data.columns:
+                    try:
+                        var_min = data[var].min()
+                        var_max = data[var].max()
+                        var_range = np.linspace(var_min, var_max, 50)
+                        
+                        # Criar dados para predição
+                        X_curve = pd.DataFrame(columns=selected_features)
+                        
+                        for col in selected_features:
+                            if col == var:
+                                X_curve[col] = var_range
+                            else:
+                                X_curve[col] = X_train[col].mean()
+                        
+                        # Calcular probabilidades
+                        probs = model.predict_proba(X_curve)[:, 1]
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(x=var_range, y=probs, mode='lines', name=f'{var}'))
+                        fig.update_layout(
+                            title=f"Probabilidade de Cancelamento vs {var}",
+                            xaxis_title=var,
+                            yaxis_title="Probabilidade de Cancelamento",
+                            height=400
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Não foi possível gerar curva para {var}: {e}")
+        else:
+            st.info("Nenhuma variável numérica disponível para curvas logísticas")
+    
+    except Exception as e:
+        st.error(f"Erro na modelagem: {e}")
+        st.info("Tente ajustar os parâmetros ou verificar os dados")
 
 elif page == "💼 Recomendações":
     st.header("💼 Recomendações Estratégicas")
