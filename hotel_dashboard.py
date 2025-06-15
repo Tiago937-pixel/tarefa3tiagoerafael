@@ -20,7 +20,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.feature_selection import RFE
 from sklearn.metrics import (accuracy_score, roc_auc_score, precision_score, 
                            recall_score, f1_score, confusion_matrix, roc_curve)
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder
 
 # Warnings
 import warnings
@@ -84,10 +84,9 @@ def load_data():
         try:
             data = pd.read_csv('hotel_bookings.csv')
             if 'is_canceled' in data.columns:
-                st.success("✅ Dados reais carregados com sucesso do repositório!")
                 return data
         except Exception as e:
-            st.info(f"Arquivo hotel_bookings.csv não encontrado no repositório: {e}")
+            pass
         
         # Se não conseguir carregar do repositório, permite upload
         uploaded_file = st.sidebar.file_uploader("📁 Upload do arquivo hotel_bookings.csv", type=['csv'])
@@ -95,11 +94,10 @@ def load_data():
         if uploaded_file is not None:
             data = pd.read_csv(uploaded_file)
             if 'is_canceled' in data.columns:
-                st.success("✅ Arquivo carregado com sucesso via upload!")
                 return data
         
         # Se não há arquivo, gera dados sintéticos
-        st.info("ℹ️ Usando dados sintéticos para demonstração. Adicione hotel_bookings.csv ao repositório ou faça upload.")
+        st.info("📊 Utilizando dados sintéticos para demonstração.")
         return generate_synthetic_data()
         
     except Exception as e:
@@ -178,41 +176,56 @@ def prepare_data(data):
         # Criar cópias para não modificar os dados originais
         df = data.copy()
         
+        # Verificar se a coluna target existe
+        if 'is_canceled' not in df.columns:
+            raise ValueError("Coluna 'is_canceled' não encontrada nos dados")
+        
         # Tratar valores missing
         df = df.fillna(0)
         
-        # Identificar colunas categóricas
+        # Identificar e processar colunas categóricas
         categorical_cols = []
-        possible_cats = ['hotel', 'arrival_date_month', 'meal', 'market_segment', 'customer_type', 
-                         'country', 'distribution_channel', 'reserved_room_type', 'assigned_room_type',
-                         'deposit_type', 'reservation_status']
-        
-        for col in possible_cats:
-            if col in df.columns and df[col].dtype == 'object':
+        for col in df.columns:
+            if df[col].dtype == 'object' and col != 'is_canceled':
                 categorical_cols.append(col)
         
-        # Fazer encoding apenas das colunas que existem
-        if categorical_cols:
-            df_encoded = pd.get_dummies(df, columns=categorical_cols, drop_first=True, dtype=int)
-        else:
-            df_encoded = df.copy()
+        # Aplicar encoding nas colunas categóricas
+        df_processed = df.copy()
         
-        # Garantir que todas as colunas sejam numéricas
-        for col in df_encoded.columns:
-            if df_encoded[col].dtype == 'object':
-                try:
-                    df_encoded[col] = pd.to_numeric(df_encoded[col], errors='coerce')
-                except:
-                    df_encoded = df_encoded.drop(columns=[col])
+        for col in categorical_cols:
+            if col in df_processed.columns:
+                # Usar get_dummies para variáveis categóricas
+                dummies = pd.get_dummies(df_processed[col], prefix=col, dtype=int)
+                df_processed = pd.concat([df_processed, dummies], axis=1)
+                df_processed = df_processed.drop(columns=[col])
         
-        # Remover linhas com valores NaN se houver
-        df_encoded = df_encoded.dropna()
+        # Garantir que todas as colunas (exceto target) sejam numéricas
+        for col in df_processed.columns:
+            if col != 'is_canceled':
+                if df_processed[col].dtype == 'object':
+                    # Tentar converter para numérico
+                    try:
+                        df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
+                    except:
+                        # Se não conseguir, remover a coluna
+                        df_processed = df_processed.drop(columns=[col])
         
-        return df_encoded
+        # Remover linhas com valores NaN
+        df_processed = df_processed.dropna()
+        
+        # Verificar se ainda temos dados suficientes
+        if len(df_processed) < 100:
+            raise ValueError("Dados insuficientes após processamento")
+        
+        # Verificar se temos variáveis para modelagem
+        feature_cols = [col for col in df_processed.columns if col != 'is_canceled']
+        if len(feature_cols) < 3:
+            raise ValueError("Variáveis insuficientes para modelagem")
+        
+        return df_processed
         
     except Exception as e:
-        st.error(f"Erro no processamento dos dados: {e}")
-        return data
+        raise Exception(f"Erro no processamento: {str(e)}")
 
 # Carregar dados
 data = load_data()
@@ -311,11 +324,11 @@ if page == "🏠 Visão Geral":
     st.subheader("🔍 Preview dos Dados")
     st.dataframe(data.head(10))
     
-    # Informações sobre as colunas - CORREÇÃO DO PROBLEMA PRINCIPAL
+    # Informações sobre as colunas
     st.subheader("📊 Informações das Colunas")
     col_info = pd.DataFrame({
         'Coluna': data.columns,
-        'Tipo': [str(dtype) for dtype in data.dtypes],  # Converter para string
+        'Tipo': [str(dtype) for dtype in data.dtypes],
         'Valores Únicos': [data[col].nunique() for col in data.columns],
         'Valores Faltantes': [data[col].isnull().sum() for col in data.columns],
         '% Faltantes': [f"{data[col].isnull().sum()/len(data)*100:.1f}%" for col in data.columns]
@@ -457,17 +470,8 @@ elif page == "🤖 Modelagem Preditiva":
         random_state = st.sidebar.number_input("Random State", value=42)
         
         # Preparar dados
-        with st.spinner("Preparando dados..."):
+        with st.spinner("Preparando dados para modelagem..."):
             df_processed = prepare_data(data)
-        
-        if df_processed is None or len(df_processed) == 0:
-            st.error("Erro no processamento dos dados. Verifique o dataset.")
-            st.stop()
-        
-        # Verificar se a coluna target existe
-        if 'is_canceled' not in df_processed.columns:
-            st.error("Coluna 'is_canceled' não encontrada nos dados processados.")
-            st.stop()
         
         # Separar features e target
         X = df_processed.drop('is_canceled', axis=1)
@@ -477,41 +481,26 @@ elif page == "🤖 Modelagem Preditiva":
         numeric_cols = X.select_dtypes(include=[np.number]).columns
         X = X[numeric_cols]
         
-        if len(X.columns) == 0:
-            st.error("Nenhuma variável numérica encontrada para modelagem!")
-            st.stop()
-        
-        st.success(f"✅ Dados preparados: {len(X)} amostras, {len(X.columns)} features")
+        st.success(f"Dados preparados: {len(X)} amostras, {len(X.columns)} features")
         
         # Divisão treino/teste
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=test_size, random_state=random_state, stratify=y
         )
         
-        st.info(f"ℹ️ Divisão: {len(X_train)} treino, {len(X_test)} teste")
-        
         # Aplicar RFE se selecionado
         selected_features = X.columns.tolist()
         if apply_rfe and len(X.columns) > n_features:
-            try:
-                with st.spinner("Aplicando RFE..."):
-                    rfe = RFE(estimator=LogisticRegression(random_state=random_state, max_iter=1000), 
-                             n_features_to_select=min(n_features, len(X.columns)))
-                    X_train_selected = rfe.fit_transform(X_train, y_train)
-                    X_test_selected = rfe.transform(X_test)
-                    selected_features = X.columns[rfe.support_].tolist()
-                    
-                    st.success(f"✅ RFE aplicado: {len(X.columns)} → {len(selected_features)} variáveis")
-                    
-                    # Converter arrays de volta para DataFrames
-                    X_train_selected = pd.DataFrame(X_train_selected, columns=selected_features, index=X_train.index)
-                    X_test_selected = pd.DataFrame(X_test_selected, columns=selected_features, index=X_test.index)
-                    
-            except Exception as e:
-                st.warning(f"⚠️ Erro ao aplicar RFE: {e}. Usando todas as variáveis.")
-                X_train_selected = X_train
-                X_test_selected = X_test
-                selected_features = X.columns.tolist()
+            with st.spinner("Aplicando RFE para seleção de variáveis..."):
+                rfe = RFE(estimator=LogisticRegression(random_state=random_state, max_iter=1000), 
+                         n_features_to_select=min(n_features, len(X.columns)))
+                X_train_selected = rfe.fit_transform(X_train, y_train)
+                X_test_selected = rfe.transform(X_test)
+                selected_features = X.columns[rfe.support_].tolist()
+                
+                # Converter arrays de volta para DataFrames
+                X_train_selected = pd.DataFrame(X_train_selected, columns=selected_features, index=X_train.index)
+                X_test_selected = pd.DataFrame(X_test_selected, columns=selected_features, index=X_test.index)
         else:
             X_train_selected = X_train
             X_test_selected = X_test
@@ -522,15 +511,13 @@ elif page == "🤖 Modelagem Preditiva":
                 st.write(f"{i+1}. {feat}")
         
         # Treinar modelo
-        with st.spinner("Treinando modelo..."):
+        with st.spinner("Treinando modelo de Regressão Logística..."):
             model = LogisticRegression(random_state=random_state, max_iter=1000)
             model.fit(X_train_selected, y_train)
             
             # Predições
             y_pred = model.predict(X_test_selected)
             y_pred_proba = model.predict_proba(X_test_selected)[:, 1]
-        
-        st.success("✅ Modelo treinado com sucesso!")
         
         # Métricas de avaliação
         st.subheader("📊 Métricas de Avaliação")
@@ -632,6 +619,7 @@ elif page == "🤖 Modelagem Preditiva":
         st.session_state['model'] = model
         st.session_state['selected_features'] = selected_features
         st.session_state['coef_df'] = coef_df
+        st.session_state['X_train_means'] = X_train_selected.mean().to_dict()
         
         # Curvas logísticas
         st.subheader("📈 Curvas Logísticas")
@@ -651,33 +639,30 @@ elif page == "🤖 Modelagem Preditiva":
                         # Criar gráfico individual para cada variável
                         var_range = np.linspace(data[var].min(), data[var].max(), 100)
                         
-                        # Probabilidade baseada no modelo treinado
-                        if var in coef_df['Variável'].values:
-                            # Criar dados fictícios mantendo outras variáveis na média
-                            X_curve = pd.DataFrame(columns=selected_features)
-                            for col in selected_features:
-                                if col == var:
-                                    X_curve[col] = var_range
-                                else:
-                                    X_curve[col] = X_train_selected[col].mean()
-                            
-                            # Calcular probabilidades
-                            probs = model.predict_proba(X_curve)[:, 1]
-                            
-                            fig = go.Figure()
-                            fig.add_trace(go.Scatter(x=var_range, y=probs, mode='lines', name=f'Curva Logística - {var}'))
-                            fig.update_layout(
-                                title=f"Probabilidade de Cancelamento vs {var}",
-                                xaxis_title=var,
-                                yaxis_title="Probabilidade de Cancelamento",
-                                height=400
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
+                        # Criar dados fictícios mantendo outras variáveis na média
+                        X_curve = pd.DataFrame(columns=selected_features)
+                        for col in selected_features:
+                            if col == var:
+                                X_curve[col] = var_range
+                            else:
+                                X_curve[col] = X_train_selected[col].mean()
+                        
+                        # Calcular probabilidades
+                        probs = model.predict_proba(X_curve)[:, 1]
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(x=var_range, y=probs, mode='lines', name=f'Curva Logística - {var}'))
+                        fig.update_layout(
+                            title=f"Probabilidade de Cancelamento vs {var}",
+                            xaxis_title=var,
+                            yaxis_title="Probabilidade de Cancelamento",
+                            height=400
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
             
     except Exception as e:
-        st.error(f"Erro na modelagem: {e}")
-        st.write("**Detalhes do erro:**")
-        st.write(str(e))
+        st.error(f"Erro na modelagem: {str(e)}")
+        st.info("Verifique se os dados estão no formato correto e tente novamente.")
 
 elif page == "💼 Recomendações Estratégicas":
     st.header("💼 Recomendações Estratégicas para Gestão Hoteleira")
@@ -804,6 +789,7 @@ elif page == "🎯 Simulador de Cenários":
     try:
         model = st.session_state['model']
         selected_features = st.session_state['selected_features']
+        X_train_means = st.session_state['X_train_means']
         
         st.subheader("🔧 Configure o Cenário")
         
@@ -856,11 +842,8 @@ elif page == "🎯 Simulador de Cenários":
                 if col in inputs:
                     feature_vector[col] = inputs[col]
                 else:
-                    # Usar a média para colunas não especificadas
-                    if col in data.columns:
-                        feature_vector[col] = data[col].mean()
-                    else:
-                        feature_vector[col] = 0
+                    # Usar a média do treino para colunas não especificadas
+                    feature_vector[col] = X_train_means.get(col, 0)
             
             # Fazer predição
             prob_cancelamento = model.predict_proba(feature_vector)[0, 1]
@@ -901,19 +884,15 @@ elif page == "🎯 Simulador de Cenários":
                 if prob_cancelamento < 0.25:
                     risco = "BAIXO"
                     icone = "✅"
-                    cor = "success"
                 elif prob_cancelamento < 0.5:
                     risco = "MÉDIO"
                     icone = "⚠️"
-                    cor = "warning"
                 elif prob_cancelamento < 0.75:
                     risco = "ALTO"
                     icone = "🔶"
-                    cor = "warning"
                 else:
                     risco = "CRÍTICO"
                     icone = "🚨"
-                    cor = "danger"
                 
                 st.markdown(f"""
                 <div class="metric-container">
@@ -955,8 +934,8 @@ elif page == "🎯 Simulador de Cenários":
                     st.write(f"• {acao}")
                     
     except Exception as e:
-        st.error(f"Erro no simulador: {e}")
-        st.write("Verifique se o modelo foi treinado corretamente na seção 'Modelagem Preditiva'.")
+        st.error(f"Erro no simulador: {str(e)}")
+        st.info("Execute novamente a 'Modelagem Preditiva' e tente novamente.")
 
 # Footer
 st.markdown("---")
@@ -964,8 +943,7 @@ st.markdown("""
 <div style="text-align: center; color: #666; padding: 1rem;">
     🏨 <strong>Sistema de Predição de Cancelamentos</strong><br>
     Desenvolvido para a disciplina de Engenharia de Produção - UnB<br>
-    Professor: João Gabriel de Moraes Souza<br><br>
-    <strong>📊 Dashboard Interativo com Regressão Logística | Ganho de +2 pontos extras</strong>
+    Professor: João Gabriel de Moraes Souza
 </div>
 """, unsafe_allow_html=True)
 
@@ -985,16 +963,4 @@ st.sidebar.markdown("""
 - Modelagem com RFE
 - Recomendações estratégicas
 - Simulador de cenários
-
-### ✅ Versão Corrigida:
-- Todos os erros de serialização corrigidos
-- Modelagem funcionando perfeitamente
-- Simulador totalmente operacional
-""")
-
-st.sidebar.markdown("---")
-st.sidebar.success("""
-💡 **Sucesso!** Esta versão corrigida resolve todos 
-os problemas de serialização e garante funcionamento 
-completo de todas as seções.
 """)
