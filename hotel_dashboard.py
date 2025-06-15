@@ -13,8 +13,19 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import (accuracy_score, roc_auc_score, precision_score, 
                            recall_score, f1_score, confusion_matrix, roc_curve,
                            classification_report)
-from imblearn.over_sampling import SMOTE
-import statsmodels.api as sm
+# Importações com fallback para compatibilidade
+try:
+    from imblearn.over_sampling import SMOTE
+    SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE_AVAILABLE = False
+    st.warning("⚠️ SMOTE não disponível - usando dados originais")
+
+try:
+    import statsmodels.api as sm
+    STATSMODELS_AVAILABLE = True
+except ImportError:
+    STATSMODELS_AVAILABLE = False
 
 # Warnings
 import warnings
@@ -82,17 +93,26 @@ st.markdown("""
 def load_data():
     """Carrega e processa os dados do hotel"""
     try:
-        # Verifica se o arquivo foi carregado pelo usuário
+        # Primeiro tenta carregar o arquivo hotel_bookings.csv do repositório
+        try:
+            data = pd.read_csv('hotel_bookings.csv')
+            if 'is_canceled' in data.columns:
+                st.success("✅ Dados reais carregados com sucesso do repositório!")
+                return data
+        except:
+            pass
+        
+        # Se não conseguir carregar do repositório, permite upload
         uploaded_file = st.sidebar.file_uploader("📁 Upload do arquivo hotel_bookings.csv", type=['csv'])
         
         if uploaded_file is not None:
             data = pd.read_csv(uploaded_file)
             if 'is_canceled' in data.columns:
-                st.success("✅ Arquivo carregado com sucesso!")
+                st.success("✅ Arquivo carregado com sucesso via upload!")
                 return data
         
         # Se não há arquivo, gera dados sintéticos
-        st.info("ℹ️ Usando dados sintéticos para demonstração. Faça upload do arquivo hotel_bookings.csv para usar dados reais.")
+        st.info("ℹ️ Usando dados sintéticos para demonstração. Adicione hotel_bookings.csv ao repositório ou faça upload.")
         return generate_synthetic_data()
         
     except Exception as e:
@@ -174,13 +194,20 @@ def prepare_data(data):
     df = df.fillna(0)
     
     # Encoding de variáveis categóricas
-    categorical_cols = ['hotel', 'arrival_date_month', 'meal', 'market_segment', 'customer_type']
+    categorical_cols = []
     
-    # Verificar se as colunas existem antes de fazer encoding
-    existing_categorical_cols = [col for col in categorical_cols if col in df.columns]
+    # Verificar quais colunas categóricas existem
+    possible_cats = ['hotel', 'arrival_date_month', 'meal', 'market_segment', 'customer_type', 
+                     'country', 'distribution_channel', 'reserved_room_type', 'assigned_room_type',
+                     'deposit_type', 'reservation_status']
     
-    if existing_categorical_cols:
-        df_encoded = pd.get_dummies(df, columns=existing_categorical_cols, drop_first=True)
+    for col in possible_cats:
+        if col in df.columns and df[col].dtype == 'object':
+            categorical_cols.append(col)
+    
+    # Fazer encoding apenas das colunas que existem
+    if categorical_cols:
+        df_encoded = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
     else:
         df_encoded = df.copy()
     
@@ -189,11 +216,15 @@ def prepare_data(data):
 def calculate_vif(X):
     """Calcula o Variance Inflation Factor para detectar multicolinearidade"""
     try:
-        from statsmodels.stats.outliers_influence import variance_inflation_factor
-        vif_data = pd.DataFrame()
-        vif_data["Variável"] = X.columns
-        vif_data["VIF"] = [variance_inflation_factor(X.values, i) for i in range(len(X.columns))]
-        return vif_data.sort_values('VIF', ascending=False)
+        if STATSMODELS_AVAILABLE:
+            from statsmodels.stats.outliers_influence import variance_inflation_factor
+            vif_data = pd.DataFrame()
+            vif_data["Variável"] = X.columns
+            vif_data["VIF"] = [variance_inflation_factor(X.values, i) for i in range(len(X.columns))]
+            return vif_data.sort_values('VIF', ascending=False)
+        else:
+            # Retorna DataFrame vazio se statsmodels não disponível
+            return pd.DataFrame({"Variável": [], "VIF": []})
     except:
         # Se der erro, retorna DataFrame vazio
         return pd.DataFrame({"Variável": [], "VIF": []})
@@ -294,6 +325,17 @@ if page == "🏠 Visão Geral":
     # Preview dos dados
     st.subheader("🔍 Preview dos Dados")
     st.dataframe(data.head(10))
+    
+    # Informações sobre as colunas
+    st.subheader("📊 Informações das Colunas")
+    col_info = pd.DataFrame({
+        'Coluna': data.columns,
+        'Tipo': data.dtypes,
+        'Valores Únicos': [data[col].nunique() for col in data.columns],
+        'Valores Faltantes': [data[col].isnull().sum() for col in data.columns],
+        '% Faltantes': [f"{data[col].isnull().sum()/len(data)*100:.1f}%" for col in data.columns]
+    })
+    st.dataframe(col_info)
 
 elif page == "📊 Análise Exploratória":
     st.header("📊 Análise Exploratória dos Dados")
@@ -420,7 +462,7 @@ elif page == "🤖 Modelagem Preditiva":
     st.sidebar.subheader("⚙️ Configurações do Modelo")
     
     test_size = st.sidebar.slider("Tamanho do conjunto de teste", 0.1, 0.5, 0.3, 0.05)
-    apply_smote = st.sidebar.checkbox("Aplicar SMOTE", value=True)
+    apply_smote = st.sidebar.checkbox("Aplicar SMOTE", value=SMOTE_AVAILABLE, disabled=not SMOTE_AVAILABLE)
     apply_rfe = st.sidebar.checkbox("Aplicar RFE", value=True)
     
     if apply_rfe:
@@ -448,8 +490,8 @@ elif page == "🤖 Modelagem Preditiva":
         X, y, test_size=test_size, random_state=random_state, stratify=y
     )
     
-    # Aplicar SMOTE se selecionado
-    if apply_smote:
+    # Aplicar SMOTE se selecionado e disponível
+    if apply_smote and SMOTE_AVAILABLE:
         try:
             smote = SMOTE(random_state=random_state)
             X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
@@ -459,7 +501,10 @@ elif page == "🤖 Modelagem Preditiva":
             X_train_balanced, y_train_balanced = X_train, y_train
     else:
         X_train_balanced, y_train_balanced = X_train, y_train
-        st.info("ℹ️ SMOTE não aplicado - dados originais mantidos")
+        if apply_smote and not SMOTE_AVAILABLE:
+            st.warning("⚠️ SMOTE não disponível - usando dados originais")
+        else:
+            st.info("ℹ️ SMOTE não aplicado - dados originais mantidos")
     
     # Aplicar RFE se selecionado
     if apply_rfe and len(X.columns) > n_features:
@@ -607,6 +652,81 @@ elif page == "🤖 Modelagem Preditiva":
                         title="Importância das Variáveis",
                         color='Coeficiente', color_continuous_scale='RdBu')
             st.plotly_chart(fig)
+        
+        # Análise com Statsmodels
+        st.subheader("📈 Análise Estatística Detalhada")
+        
+        if STATSMODELS_AVAILABLE:
+            with st.expander("🔍 Ver Resultado Completo do Statsmodels"):
+                try:
+                    # Recriar modelo com statsmodels
+                    if apply_rfe:
+                        X_sm = pd.DataFrame(X_train_selected, columns=selected_features)
+                    else:
+                        X_sm = X_train_balanced
+                    
+                    X_sm_const = sm.add_constant(X_sm)
+                    logit_model = sm.Logit(y_train_balanced, X_sm_const)
+                    result = logit_model.fit(disp=0)
+                    
+                    st.text(str(result.summary()))
+                    
+                    # Tabela de coeficientes com significância
+                    coef_summary = pd.DataFrame({
+                        'Variável': result.params.index,
+                        'Coeficiente': result.params.values,
+                        'Erro Padrão': result.bse.values,
+                        'z-value': result.tvalues.values,
+                        'P-valor': result.pvalues.values,
+                        'Odds Ratio': np.exp(result.params.values),
+                        'Significante (α=0.05)': result.pvalues.values < 0.05
+                    })
+                    
+                    st.write("**Resumo dos Coeficientes:**")
+                    st.dataframe(coef_summary)
+                    
+                except Exception as e:
+                    st.error(f"Erro na análise com Statsmodels: {e}")
+        else:
+            st.warning("⚠️ Statsmodels não disponível - análise estatística detalhada não disponível")
+                
+        # Curvas logísticas
+        st.subheader("📈 Curvas Logísticas")
+        
+        # Selecionar variáveis para curvas logísticas
+        numeric_selected = [col for col in selected_features if col in data.select_dtypes(include=[np.number]).columns]
+        
+        if len(numeric_selected) >= 3:
+            vars_for_curves = st.multiselect(
+                "Selecione até 3 variáveis para gerar curvas logísticas:",
+                numeric_selected[:10],  # Limitar para evitar muitas opções
+                default=numeric_selected[:3]
+            )
+            
+            if vars_for_curves:
+                for var in vars_for_curves:
+                    if var in data.columns:
+                        # Criar gráfico individual para cada variável
+                        var_range = np.linspace(data[var].min(), data[var].max(), 100)
+                        
+                        # Probabilidade teórica baseada no coeficiente
+                        if var in coef_df['Variável'].values:
+                            coef = coef_df[coef_df['Variável'] == var]['Coeficiente'].iloc[0]
+                            intercept = coef_df['Coeficiente'].mean()  # Aproximação do intercepto
+                            
+                            # Calcular probabilidades
+                            logits = intercept + coef * var_range
+                            probs = 1 / (1 + np.exp(-logits))
+                            
+                            fig = go.Figure()
+                            fig.add_trace(go.Scatter(x=var_range, y=probs, mode='lines', name=f'Curva Logística - {var}'))
+                            fig.update_layout(
+                                title=f"Probabilidade de Cancelamento vs {var}",
+                                xaxis_title=var,
+                                yaxis_title="Probabilidade de Cancelamento",
+                                height=400
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
             
     except Exception as e:
         st.error(f"Erro na modelagem: {e}")
@@ -1042,7 +1162,7 @@ st.sidebar.markdown("""
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
-💡 **Dica**: Faça upload do arquivo hotel_bookings.csv 
-na seção "Visão Geral" para usar dados reais, ou 
-explore com os dados sintéticos gerados automaticamente.
+💡 **Dica**: O sistema detecta automaticamente se 
+o arquivo hotel_bookings.csv está no repositório 
+ou permite upload manual na seção lateral.
 """)
